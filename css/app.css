@@ -270,3 +270,11 @@ html[data-theme="dark"] .q-tag.q3 { background: #1d3a27; color: #6fdc95; }
 .reader-open .toast.show { transform: translate(-50%, 0); }
 
 @media (min-width: 700px) { .bar h1 { font-size: 34px; } .scroll { max-width: 760px; margin: 0 auto; width: 100%; } }
+
+/* AI voices */
+.ai-card { background: var(--bg); border-radius: 14px; padding: 14px; line-height: 1.45; }
+.ai-card p { margin: 6px 0 10px; font-size: 14px; }
+.ai-card p.small, .ai-card small { font-size: 12px; color: var(--muted); }
+.ai-card .err { color: var(--danger); }
+.player.waiting .pbtn.play { position: relative; }
+.player.waiting .pbtn.play::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 3px solid transparent; border-top-color: var(--accent); animation: spin .9s linear infinite; }

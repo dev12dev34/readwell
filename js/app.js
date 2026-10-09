@@ -3,8 +3,9 @@ import { splitSentences, countWords } from './text.js';
 import { importFile, importImage, importText, importUrl, Cancelled } from './importers.js';
 import { lookup, cleanWord } from './dict.js';
 import { Player, listVoices, voicesReady, voiceQuality, qualityLabel, cleanVoiceName, wordsOf } from './speech.js';
+import { KokoroPlayer, KOKORO_VOICES, isKokoro, kokoroVoice, engine } from './kokoro.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -19,7 +20,14 @@ const state = {
   settings: { voiceURI: '', rate: 1, font: 1, theme: 'auto', face: 'serif', wordHl: true, follow: true, marks: true },
   voices: [], target: null, tab: 'library',
 };
-const player = new Player();
+const sysPlayer = new Player();
+const aiPlayer = new KokoroPlayer();
+let active = sysPlayer;
+// `player` always talks to whichever voice engine is in use.
+const player = new Proxy({}, {
+  get(_, k) { const v = active[k]; return typeof v === 'function' ? v.bind(active) : v; },
+  set(_, k, v) { if (typeof k === 'string' && k.startsWith('on')) { sysPlayer[k] = v; aiPlayer[k] = v; } else active[k] = v; return true; },
+});
 
 // ================================================================ utilities
 let toastTimer;
@@ -128,7 +136,7 @@ function applySettings() {
   const dark = s.theme === 'dark' || (s.theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
   const bg = { sepia: '#f4ecd8' }[s.theme] || (dark ? '#16171a' : '#f7f7f5');
   $$('meta[name=theme-color]').forEach((m) => { m.setAttribute('content', bg); m.removeAttribute('media'); });
-  player.rate = s.rate;
+  sysPlayer.rate = s.rate; aiPlayer.setRate(s.rate);
 }
 function changeFont(d) {
   state.settings.font = Math.round(Math.max(0.7, Math.min(2, state.settings.font + d * 0.1)) * 10) / 10;
@@ -155,31 +163,120 @@ async function initVoices() {
   pickVoice();
   window.speechSynthesis?.addEventListener?.('voiceschanged', () => { state.voices = listVoices(); pickVoice(); });
 }
+function useEngine(next) {
+  if (next === active) return;
+  const { sentences, index } = active;
+  active.stop();
+  active = next;
+  active.sentences = sentences; active.index = index;
+  active.setRate(state.settings.rate);
+  $('#player').classList.remove('waiting');
+}
 function pickVoice() {
-  const v = state.voices.find((x) => x.voiceURI === state.settings.voiceURI) || state.voices[0] || null;
-  if (player.voice !== v) player.setVoice(v);
-  $('#voiceValue').textContent = v ? `${cleanVoiceName(v)}${voiceQuality(v) > 1 ? ' · ' + qualityLabel(voiceQuality(v)) : ''}` : (player.supported ? 'Default' : 'Not available');
+  const uri = state.settings.voiceURI;
+  if (isKokoro(uri) && state.settings.aiInstalled) {
+    useEngine(aiPlayer);
+    const v = kokoroVoice(uri);
+    if (!aiPlayer.voice || aiPlayer.voice.voiceURI !== v.voiceURI) aiPlayer.setVoice(v);
+    $('#voiceValue').textContent = `${v.name} · AI voice`;
+    $('#voiceHint').hidden = true;
+    return;
+  }
+  useEngine(sysPlayer);
+  const v = state.voices.find((x) => x.voiceURI === uri) || state.voices[0] || null;
+  if (sysPlayer.voice !== v) sysPlayer.setVoice(v);
+  $('#voiceValue').textContent = v ? `${cleanVoiceName(v)}${voiceQuality(v) > 1 ? ' · ' + qualityLabel(voiceQuality(v)) : ''}` : (sysPlayer.supported ? 'Default' : 'Not available');
   const best = state.voices.length ? voiceQuality(state.voices[0]) : 0;
   $('#voiceHint').hidden = best >= 3;
 }
+
+// ---- AI voice download (one time, ~100 MB, kept on the phone)
+const ai = { downloading: false, loaded: 0, total: 0, error: '', listeners: new Set() };
+const mb = (n) => Math.round(n / 1048576);
+function aiNotify() { ai.listeners.forEach((f) => f()); }
+async function installAI() {
+  if (ai.downloading) return;
+  ai.downloading = true; ai.error = ''; ai.loaded = 0; aiNotify();
+  persist();
+  try {
+    try {
+      const est = await navigator.storage.estimate();
+      if (est.quota && est.quota - est.usage < 160 * 1048576) throw new Error('There isn’t enough free space on this phone (about 100 MB is needed).');
+    } catch (e) { if (e.message.startsWith('There')) throw e; }
+    await engine.install((l, t) => { ai.loaded = l; ai.total = t; aiNotify(); });
+    state.settings.aiInstalled = true;
+    if (!isKokoro(state.settings.voiceURI)) state.settings.voiceURI = 'kokoro:af_heart';
+    saveSettings(); pickVoice();
+    toast('AI voices are ready ✓');
+  } catch (e) {
+    ai.error = /fetch|network|load failed/i.test(e.message) ? 'The download was interrupted. Tap Download to continue where it stopped.' : e.message;
+  } finally { ai.downloading = false; aiNotify(); }
+}
+async function removeAI() {
+  if (!(await confirmSheet('Remove AI voices?', 'This frees about 100 MB. You can download them again at any time.', 'Remove'))) return;
+  await engine.remove().catch(() => {});
+  state.settings.aiInstalled = false;
+  if (isKokoro(state.settings.voiceURI)) state.settings.voiceURI = '';
+  saveSettings(); pickVoice(); toast('AI voices removed');
+}
+
 function voiceSheet() {
   const vs = state.voices;
   const cur = player.voice;
-  const html = vs.length ? vs.map((v, i) => {
+  const sysHtml = vs.length ? vs.map((v, i) => {
     const q = voiceQuality(v);
-    return `<button data-i="${i}" class="${cur && cur.voiceURI === v.voiceURI ? 'on' : ''}"><span>${esc(cleanVoiceName(v))}<span class="q-tag q${q}">${qualityLabel(q)}</span><br><small>${esc(v.lang)}</small></span><span>${cur && cur.voiceURI === v.voiceURI ? '✓' : ''}</span></button>`;
+    const on = cur && cur.voiceURI === v.voiceURI;
+    return `<button data-i="${i}" class="${on ? 'on' : ''}"><span>${esc(cleanVoiceName(v))}<span class="q-tag q${q}">${qualityLabel(q)}</span><br><small>${esc(v.lang)}</small></span><span>${on ? '✓' : ''}</span></button>`;
   }).join('') : '<p class="sub">No English voices were found on this device.</p>';
   const best = vs.length ? voiceQuality(vs[0]) : 0;
   const b = openSheet(`<h2>Voice</h2>
-    ${best < 3 ? `<p class="tip">Want a more natural voice? It’s free: open the <b>Settings</b> app → <b>Accessibility</b> → <b>Spoken Content</b> → <b>Voices</b> → <b>English</b>, choose a voice marked <b>Premium</b> (Ava, Zoe, Evan, Nathan…) and download it. Then close and reopen Readwell.</p>` : ''}
     <div class="label">Speed</div>
     <div class="speeds">${SPEEDS.map((s) => `<button data-s="${s}" class="${s === state.settings.rate ? 'on' : ''}">${s}×</button>`).join('')}</div>
+    <div class="label">✨ Natural AI voices (Kokoro)</div>
+    <div id="aiBox"></div>
     <div class="label">Voices on this ${/iPad/.test(navigator.userAgent) ? 'iPad' : 'phone'}</div>
-    <div class="voice-list">${html}</div>`);
-  b.querySelectorAll('.voice-list button').forEach((btn) => btn.addEventListener('click', () => {
+    ${best < 3 ? `<p class="hint" style="margin:0 0 6px">More natural iPhone voices are free too: Settings app → Accessibility → Spoken Content → Voices → English → pick one marked <b>Premium</b>.</p>` : ''}
+    <div class="voice-list" id="sysVoices">${sysHtml}</div>`, { onClose: () => ai.listeners.delete(renderAI) });
+  const box = b.querySelector('#aiBox');
+  const mark = () => {
+    const uri = state.settings.voiceURI;
+    b.querySelectorAll('.voice-list button').forEach((x) => {
+      const on = x.dataset.k ? isKokoro(uri) && state.settings.aiInstalled && uri === 'kokoro:' + x.dataset.k : !(isKokoro(uri) && state.settings.aiInstalled) && vs[+x.dataset.i] && player.voice && vs[+x.dataset.i].voiceURI === player.voice.voiceURI;
+      x.classList.toggle('on', !!on); x.lastElementChild.textContent = on ? '✓' : '';
+    });
+  };
+  function renderAI() {
+    if (state.settings.aiInstalled) {
+      const uri = state.settings.voiceURI;
+      const rtf = engine.rtf;
+      const speedNote = rtf == null ? '' : rtf < 0.85 ? `This phone makes speech ${(1 / rtf).toFixed(1)}× faster than it plays ✓` : `This phone makes speech a little slower than it plays, so there may be short pauses between sentences.`;
+      box.innerHTML = `<div class="voice-list">${KOKORO_VOICES.map((v) => {
+        const on = isKokoro(uri) && uri === 'kokoro:' + v.id;
+        return `<button data-k="${v.id}" class="${on ? 'on' : ''}"><span>${v.star ? '★ ' : ''}${esc(v.name)}<span class="q-tag q3">AI</span><br><small>${v.accent === 'UK' ? 'British' : 'American'} · ${v.gender === 'F' ? 'female' : 'male'}${v.note ? ' · ' + v.note : ''}</small></span><span>${on ? '✓' : ''}</span></button>`;
+      }).join('')}</div>
+      <p class="hint" style="margin:6px 0 0">${speedNote ? esc(speedNote) + ' ' : ''}<button class="link" id="aiRemove">Remove AI voices</button></p>`;
+      box.querySelectorAll('[data-k]').forEach((btn) => btn.onclick = () => {
+        state.settings.voiceURI = 'kokoro:' + btn.dataset.k; saveSettings(); pickVoice(); mark();
+        if (!player.playing) { toast('Loading voice…', 1500); player.say(`Hello, I'm ${kokoroVoice(state.settings.voiceURI).name}.`); }
+      });
+      box.querySelector('#aiRemove').onclick = () => { closeSheet(); removeAI(); };
+    } else if (ai.downloading) {
+      const pct = ai.total ? Math.min(100, Math.round((ai.loaded / ai.total) * 100)) : 0;
+      box.innerHTML = `<div class="ai-card"><b>Downloading AI voices… ${pct}%</b><div class="busy-bar" style="margin:10px 0 6px"><div style="width:${pct}%"></div></div><small>${mb(ai.loaded)} of ${mb(ai.total) || 100} MB. You can close this and keep reading; keep Readwell open until it finishes.</small></div>`;
+    } else {
+      box.innerHTML = `<div class="ai-card"><b>The same natural voices as Readwell for Mac</b>
+        <p>17 lifelike voices (American and British) that run on this phone, with no account and no cost. One-time download of about <b>100 MB</b> (use Wi-Fi); they work offline afterwards.</p>
+        <p class="small">Newer iPhones (2021 or later) work best. Older ones may pause briefly between sentences.</p>
+        ${ai.error ? `<p class="err">${esc(ai.error)}</p>` : ''}
+        <button class="btn primary" id="aiGet">Download AI voices</button></div>`;
+      box.querySelector('#aiGet').onclick = () => installAI();
+    }
+  }
+  ai.listeners.add(renderAI);
+  renderAI();
+  b.querySelector('#sysVoices').querySelectorAll('button').forEach((btn) => btn.addEventListener('click', () => {
     const v = vs[+btn.dataset.i];
-    state.settings.voiceURI = v.voiceURI; saveSettings(); pickVoice();
-    b.querySelectorAll('.voice-list button').forEach((x) => { x.classList.toggle('on', x === btn); x.lastElementChild.textContent = x === btn ? '✓' : ''; });
+    state.settings.voiceURI = v.voiceURI; saveSettings(); pickVoice(); mark();
     if (!player.playing) player.say(`Hello, I'm ${cleanVoiceName(v)}.`);
   }));
   b.querySelectorAll('.speeds button').forEach((btn) => btn.addEventListener('click', () => {
@@ -370,7 +467,7 @@ async function addDoc(r) {
   let text = r.text.trim();
   // the title is shown as a heading, so don't repeat it as the first paragraph
   const first = text.split(/\n{2,}/)[0];
-  if (r.title && first.trim().toLowerCase() === r.title.trim().toLowerCase() && text.length > first.length) text = text.slice(first.length).trim();
+  if (r.title && !['text', 'txt', 'image'].includes(r.kind) && first.trim().toLowerCase() === r.title.trim().toLowerCase() && text.length > first.length) text = text.slice(first.length).trim();
   const sentences = text.split(/\n{2,}/).reduce((n, p) => n + splitSentences(p).length, 0);
   const doc = { id, title: r.title || 'Untitled', kind: r.kind || 'text', source: r.source || '', added: Date.now(), opened: Date.now(), pos: 0, total: sentences, chars: text.length, words: countWords(text) };
   await db.put('texts', { id, text });
@@ -408,6 +505,7 @@ async function openDoc(id) {
   });
   page.innerHTML = html.join('');
   $('#docTitle').textContent = doc.title;
+  aiPlayer.title = doc.title;
   $('#reader').hidden = false; document.body.classList.add('reader-open');
   $('#tabs').hidden = true;
   player.load(state.sentences, Math.min(doc.pos || 0, state.sentences.length - 1));
@@ -415,6 +513,7 @@ async function openDoc(id) {
   markSentence(player.index, false);
   requestAnimationFrame(() => scrollToSentence(player.index, 'auto', 0.25));
   updateProgress();
+  if (active === aiPlayer) aiPlayer.prepare(player.index);
   history.pushState({ reader: id }, '');
 }
 
@@ -504,6 +603,12 @@ player.onstate = (playing) => {
   $('#player').classList.toggle('playing', playing);
   $('#playBtn').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   if (!playing) savePos();
+};
+player.onwait = (on, msg) => { $('#player').classList.toggle('waiting', !!on); if (on && msg) toast(msg, 4000); };
+player.onerror = (msg) => {
+  $('#player').classList.remove('waiting');
+  if (/not-installed|manifest/.test(msg)) { state.settings.aiInstalled = false; saveSettings(); pickVoice(); toast('The AI voices need to be downloaded again (Voice menu).', 4500); }
+  else toast(msg, 4500);
 };
 player.onend = () => { clearWord(); if (state.doc) { state.doc.pos = state.sentences.length - 1; savePos(); toast('Finished'); } };
 
@@ -1049,4 +1154,4 @@ async function start() {
 start();
 
 // for tests
-window.__readwell = { state, player, schedule };
+window.__readwell = { state, player, schedule, engine, aiPlayer, sysPlayer };
