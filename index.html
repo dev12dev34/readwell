@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Readwell</title>
+<meta name="description" content="Reads documents, web pages and photos aloud with word highlighting.">
+<meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16171a" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Readwell">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============================ LIBRARY / WORDS / NOTES / SETTINGS -->
+  <section class="view active" id="view-library" data-tab="library">
+    <header class="bar"><h1>Library</h1><button class="btn primary" id="addBtn" aria-label="Add something to read">＋ Add</button></header>
+    <div class="scroll">
+      <div id="installTip" class="tip" hidden>
+        <b>Install Readwell:</b> tap <span class="ios-share" aria-label="Share"></span> <b>Share</b>, then <b>Add to Home Screen</b>. It then opens like an app and works offline.
+        <button class="link" data-dismiss="installTip">Got it</button>
+      </div>
+      <ul class="list" id="docList"></ul>
+      <div class="empty" id="libEmpty" hidden>
+        <div class="empty-icon">📖</div>
+        <h2>Nothing to read yet</h2>
+        <p>Add a PDF, Word or EPUB file, a web link, pasted text, or a photo of a page.</p>
+        <button class="btn primary big" data-action="add">Add something to read</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-words" data-tab="words">
+    <header class="bar"><h1>My Words</h1><button class="btn" id="wordsExportBtn">Export</button></header>
+    <div class="scroll">
+      <div class="review-banner" id="reviewBanner">
+        <div><b id="dueCount">0</b> <span id="dueLabel">words to review</span></div>
+        <button class="btn primary" id="reviewBtn">Review</button>
+      </div>
+      <input class="search" id="wordSearch" type="search" placeholder="Search your words" autocomplete="off">
+      <ul class="list words" id="wordList"></ul>
+      <div class="empty" id="wordsEmpty" hidden>
+        <div class="empty-icon">🔖</div>
+        <h2>No saved words</h2>
+        <p>While reading, tap a word and choose <b>Save</b>. Saved words appear here with their meaning, and you can review them as flashcards.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-notes" data-tab="notes">
+    <header class="bar"><h1>My Notes</h1><button class="btn" id="notesExportAllBtn">Export</button></header>
+    <div class="scroll">
+      <div id="allNotes"></div>
+      <div class="empty" id="notesEmpty" hidden>
+        <div class="empty-icon">✎</div>
+        <h2>No notes yet</h2>
+        <p>Select text while reading and tap <b>Note</b> to mark something to change or remember.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-settings" data-tab="settings">
+    <header class="bar"><h1>Settings</h1></header>
+    <div class="scroll">
+      <h3 class="group-title">Voice</h3>
+      <div class="group">
+        <button class="row" id="voiceRow"><span>Voice</span><span class="value" id="voiceValue">Default</span></button>
+        <div class="row"><span>Speed</span><span class="stepper"><button data-speed="-1" aria-label="Slower">−</button><b id="speedValue">1×</b><button data-speed="1" aria-label="Faster">＋</button></span></div>
+        <label class="row"><span>Highlight each word</span><input type="checkbox" class="switch" id="setWordHl" checked></label>
+        <label class="row"><span>Follow along (auto-scroll)</span><input type="checkbox" class="switch" id="setFollow" checked></label>
+      </div>
+      <p class="hint" id="voiceHint">For the most natural voices, download free <b>Premium</b> or <b>Enhanced</b> voices: Settings app → Accessibility → Spoken Content → Voices → English. Pick one marked Premium (Ava, Zoe, Evan, Nathan…), download it, then reopen Readwell.</p>
+
+      <h3 class="group-title">Reading</h3>
+      <div class="group">
+        <div class="row"><span>Text size</span><span class="stepper"><button data-font="-1" aria-label="Smaller">A</button><b id="fontValue">100%</b><button data-font="1" aria-label="Larger" class="bigA">A</button></span></div>
+        <div class="row"><span>Theme</span>
+          <span class="seg" id="themeSeg"><button data-theme="auto">Auto</button><button data-theme="light">Light</button><button data-theme="sepia">Sepia</button><button data-theme="dark">Dark</button></span></div>
+        <div class="row"><span>Font</span>
+          <span class="seg" id="fontSeg"><button data-face="serif">Serif</button><button data-face="sans">Sans</button><button data-face="dyslexic">Rounded</button></span></div>
+      </div>
+
+      <h3 class="group-title">Your data</h3>
+      <div class="group">
+        <button class="row" id="backupBtn"><span>Back up everything</span><span class="value">⇪</span></button>
+        <button class="row" id="restoreBtn"><span>Restore from a backup</span><span class="value">⇩</span></button>
+        <div class="row"><span>Storage used</span><span class="value" id="storageValue">–</span></div>
+      </div>
+      <p class="hint">Everything stays on this phone. Nothing is uploaded, except the word you look up in the dictionary and links you open. Back up now and then: deleting the app from your Home Screen also deletes its library.</p>
+
+      <h3 class="group-title">About</h3>
+      <div class="group">
+        <div class="row"><span>Works offline</span><span class="value" id="offlineValue">Checking…</span></div>
+        <div class="row"><span>Version</span><span class="value" id="versionValue"></span></div>
+        <button class="row" id="updateBtn"><span>Check for updates</span><span class="value">↻</span></button>
+      </div>
+      <p class="hint small">Text recognition by Tesseract, PDF reading by PDF.js, definitions from dictionaryapi.dev and Datamuse, web pages via r.jina.ai.</p>
+    </div>
+  </section>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="library" class="active"><span class="ti">▤</span>Library</button>
+    <button data-tab="words"><span class="ti">🔖</span>Words<i class="badge" id="tabBadge" hidden></i></button>
+    <button data-tab="notes"><span class="ti">✎</span>Notes</button>
+    <button data-tab="settings"><span class="ti">⚙︎</span>Settings</button>
+  </nav>
+
+  <!-- ============================ READER -->
+  <section class="reader" id="reader" hidden>
+    <header class="bar reader-bar">
+      <button class="icon" id="backBtn" aria-label="Back to library">‹</button>
+      <button class="title" id="docTitle" title="Rename"></button>
+      <button class="icon" id="notesBtn" aria-label="Notes in this document">✎<i class="badge small" id="notesBadge" hidden></i></button>
+      <button class="icon" id="marksBtn" aria-label="Show or hide note highlights" aria-pressed="true">◐</button>
+      <button class="icon" id="fontBtn" aria-label="Text size">Aa</button>
+    </header>
+    <div class="fontpop" id="fontPop" hidden>
+      <button data-font="-1" aria-label="Smaller">A</button><span id="fontPopValue">100%</span><button data-font="1" class="bigA" aria-label="Larger">A</button>
+    </div>
+    <article class="page" id="page" lang="en"></article>
+
+    <div class="actionbar" id="actionBar" hidden>
+      <div class="ab-word" id="abWord"></div>
+      <div class="ab-buttons">
+        <button data-act="read">▶ Read</button>
+        <button data-act="define">Define</button>
+        <button data-act="save">Save</button>
+        <button data-act="note">Note</button>
+        <button data-act="copy">Copy</button>
+      </div>
+    </div>
+
+    <footer class="player" id="player">
+      <div class="progress"><div id="progFill"></div></div>
+      <div class="pmeta"><span id="posLabel"></span><span id="timeLabel"></span></div>
+      <div class="controls">
+        <button class="pbtn speed" id="speedBtn" aria-label="Speed">1×</button>
+        <button class="pbtn" id="prevBtn" aria-label="Previous sentence">⏮</button>
+        <button class="pbtn play" id="playBtn" aria-label="Play"><span class="i-play"></span></button>
+        <button class="pbtn" id="nextBtn" aria-label="Next sentence">⏭</button>
+        <button class="pbtn voice" id="voiceBtn" aria-label="Voice">🗣</button>
+      </div>
+    </footer>
+  </section>
+
+  <!-- ============================ SHEETS -->
+  <div class="scrim" id="scrim" hidden></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" hidden>
+    <div class="grabber"></div>
+    <button class="sheet-x" id="sheetX" aria-label="Close">✕</button>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+
+  <div class="cards" id="cards" hidden>
+    <header class="bar"><button class="btn" id="cardsClose">Done</button><span id="cardsCount"></span><span></span></header>
+    <div class="card-wrap"><div class="card" id="card"></div></div>
+    <div class="grades" id="grades" hidden>
+      <button data-grade="1" class="again">Again<small>10 min</small></button>
+      <button data-grade="2" class="hard">Hard<small id="g2"></small></button>
+      <button data-grade="3" class="good">Good<small id="g3"></small></button>
+      <button data-grade="4" class="easy">Easy<small id="g4"></small></button>
+    </div>
+    <button class="btn primary big reveal" id="revealBtn">Show answer</button>
+  </div>
+
+  <div class="busy" id="busy" hidden>
+    <div class="busy-box">
+      <div class="spinner"></div>
+      <div id="busyText">Working…</div>
+      <div class="busy-bar"><div id="busyFill"></div></div>
+      <button class="btn" id="busyCancel">Cancel</button>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <input type="file" id="fileInput" accept=".pdf,.docx,.epub,.txt,.md,.markdown,.html,.htm,.odt,.rtf,image/*,application/pdf,text/plain" hidden>
+  <input type="file" id="photoInput" accept="image/*" hidden>
+  <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+  <input type="file" id="restoreInput" accept=".json,application/json" hidden>
+</div>
+<noscript>Readwell needs JavaScript turned on.</noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
