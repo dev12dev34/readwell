@@ -1,6 +1,6 @@
 // Readwell offline support: keeps a copy of the app on the phone so it opens
 // and works without the internet. Bump VERSION when publishing an update.
-const VERSION = 'readwell-1.1.0';
+const VERSION = 'readwell-1.1.1';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/db.js', 'js/text.js', 'js/importers.js', 'js/ocr.js', 'js/dict.js', 'js/speech.js', 'js/kokoro.js',
@@ -16,7 +16,7 @@ const EXTRA = [
   'vendor/ort/ort.wasm.min.js', 'vendor/ort/ort-wasm-simd-threaded.js', 'vendor/phonemizer.js',
 ];
 
-// Cross-origin isolation lets the AI voice use several processor cores.
+// (Not used: cross-origin isolation caused problems on iPhones.)
 function isolate(res) {
   if (!res || res.status === 0 || res.type === 'opaque') return res;
   const h = new Headers(res.headers);
@@ -50,7 +50,7 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return; // dictionary & web pages go straight to the network
   // AI voice model files are big; the voice engine keeps its own copy of them.
   if (url.pathname.includes('/ai/')) return;
-  event.respondWith(handle(req).then(isolate));
+  event.respondWith(handle(req));
 });
 
 async function handle(req) {

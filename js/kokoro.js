@@ -36,11 +36,12 @@ class Engine {
   worker() {
     if (!this.w) {
       const url = new URL('./kokoro-worker.js', import.meta.url);
-      try { const dev = localStorage.getItem('rw-ai-remote'); if (dev) url.searchParams.set('remote', dev); } catch {}
       this.w = new Worker(url, { type: 'module' });
+      try { const dev = localStorage.getItem('rw-ai-remote'); if (dev) this.w.postMessage({ cmd: 'config', remote: dev }); } catch {}
       this.w.onmessage = (e) => {
         const m = e.data;
         if (m.type === 'progress') { this.onprogress && this.onprogress(m.loaded, m.total); return; }
+        if (m.type === 'stage') { this.stage = m.text; this.onstage && this.onstage(m.text); return; }
         const p = this.wait.get(m.id); if (!p) return;
         this.wait.delete(m.id);
         if (m.type === 'error') p.reject(new Error(m.error)); else p.resolve(m);
@@ -61,9 +62,25 @@ class Engine {
     return p;
   }
   cancel(ids) { if (this.w && ids.length) { this.w.postMessage({ cmd: 'cancel', ids }); for (const id of ids) { const p = this.wait.get(id); if (p) { this.wait.delete(id); p.reject(Object.assign(new Error('cancelled'), { cancelled: true })); } } } }
+  /** Throw the voice engine away (if it is stuck) and start fresh next time. */
+  reset(reason = 'reset') {
+    if (this.w) { try { this.w.terminate(); } catch {} }
+    this.w = null; this.ready = false;
+    const err = Object.assign(new Error(reason), { reset: true });
+    for (const p of this.wait.values()) p.reject(err);
+    this.wait.clear();
+  }
   status() { return this.send('status'); }
   install(onprogress) { this.onprogress = onprogress; return this.send('install').finally(() => { this.onprogress = null; }); }
-  async load() { if (this.ready) return; const r = await this.send('load'); this.ready = true; this.threads = r.threads; }
+  async load() {
+    if (this.ready) return;
+    if (!this.loadP) {
+      this.loadP = withTimeout(this.send('load'), 150000, 'ai-timeout-load')
+        .then((r) => { this.ready = true; this.threads = r.threads; })
+        .finally(() => { this.loadP = null; });
+    }
+    return this.loadP;
+  }
   remove() { this.ready = false; return this.send('remove'); }
   synth(text, voice, speed = 1) {
     const p = this.send('synth', { text, voice, speed });
@@ -78,8 +95,30 @@ class Engine {
 }
 export const engine = new Engine();
 
+export function withTimeout(p, ms, code) {
+  let t;
+  return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => { engine.reset(code); rej(Object.assign(new Error(code), { timeout: true })); }, ms); })])
+    .finally(() => clearTimeout(t));
+}
+
+/** Check the AI voice on this phone, step by step. */
+export async function selfTest(onstep) {
+  const t0 = performance.now();
+  engine.onstage = (s) => onstep(s);
+  try {
+    onstep('Starting the voice engine…');
+    await engine.load();
+    const tl = (performance.now() - t0) / 1000;
+    onstep(`Engine ready in ${tl.toFixed(1)} s. Making a test sentence…`);
+    const t1 = performance.now();
+    const a = await withTimeout(engine.synth('This is a short test of the natural AI voice.', 'af_heart', 1), 120000, 'ai-timeout');
+    const make = (performance.now() - t1) / 1000, dur = a.length / SR;
+    return { ok: true, load: tl, make, dur, rtf: make / dur, samples: a };
+  } finally { engine.onstage = null; }
+}
+
 // ------------------------------------------------------------------ helpers
-function wavUrl(samples) {
+export function wavBytes(samples) {
   const n = samples.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
   const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
   w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
@@ -87,8 +126,9 @@ function wavUrl(samples) {
   v.setUint32(24, SR, true); v.setUint32(28, SR * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
   w(36, 'data'); v.setUint32(40, n * 2, true);
   for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, samples[i])); v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
-  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  return buf;
 }
+function wavUrl(samples) { return URL.createObjectURL(new Blob([wavBytes(samples)], { type: 'audio/wav' })); }
 const SILENT = (() => wavUrl(new Float32Array(1200)))();
 
 /** Estimate when each word is spoken, from the audio's loud part and word lengths. */
@@ -240,6 +280,10 @@ export class KokoroPlayer {
     const gen = ++this.gen;
     this._internalPause = true; this.audio.pause(); this._internalPause = false;
     this.index = Math.max(0, Math.min(index, this.sentences.length - 1));
+    // drop queued clips that are no longer near where we're reading
+    const stale = [];
+    for (const [key, p] of this.cache) { const i = +key.split(':')[0]; if (i < this.index || i > this.index + 3) { stale.push(p.id); this.cache.delete(key); } }
+    engine.cancel(stale.filter(Boolean));
     // start on a word boundary
     const s = this.sentences[this.index];
     const w = wordsOf(s.text).find(([st, len]) => charOffset < st + len);
@@ -256,13 +300,21 @@ export class KokoroPlayer {
     const p = this._get(u);
     this._prefetch(u);
     let samples, waited = false;
-    const t = setTimeout(() => { if (gen === this.gen) { waited = true; this.onwait(true); } }, 150);
+    const t = setTimeout(() => { if (gen === this.gen) { waited = true; this.onwait(true, 'Making speech…'); } }, 150);
     try {
-      if (!engine.ready) { clearTimeout(t); waited = true; this.onwait(true, 'Preparing the AI voice…'); await engine.load(); }
-      samples = await p;
+      if (!engine.ready) {
+        clearTimeout(t); waited = true; this.onwait(true, 'Preparing the AI voice (first time can take up to a minute)…');
+        engine.onstage = (s) => { if (gen === this.gen) this.onwait(true, s); };
+        await engine.load();
+        engine.onstage = null;
+        this.onwait(true, 'Making speech…');
+      }
+      samples = await withTimeout(p, 30000 + u.text.length * 600, 'ai-timeout');
     } catch (e) {
+      engine.onstage = null;
       clearTimeout(t); if (waited) this.onwait(false);
       if (gen !== this.gen || e.cancelled) return;
+      if (e.reset && e.message === 'reset') return;
       this.playing = false; this.onstate(false); this._unlockScreen();
       this.onerror(e.message || String(e));
       return;

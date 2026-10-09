@@ -3,9 +3,9 @@ import { splitSentences, countWords } from './text.js';
 import { importFile, importImage, importText, importUrl, Cancelled } from './importers.js';
 import { lookup, cleanWord } from './dict.js';
 import { Player, listVoices, voicesReady, voiceQuality, qualityLabel, cleanVoiceName, wordsOf } from './speech.js';
-import { KokoroPlayer, KOKORO_VOICES, isKokoro, kokoroVoice, engine } from './kokoro.js';
+import { KokoroPlayer, KOKORO_VOICES, isKokoro, kokoroVoice, engine, selfTest, wavBytes } from './kokoro.js';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -254,7 +254,27 @@ function voiceSheet() {
         const on = isKokoro(uri) && uri === 'kokoro:' + v.id;
         return `<button data-k="${v.id}" class="${on ? 'on' : ''}"><span>${v.star ? '★ ' : ''}${esc(v.name)}<span class="q-tag q3">AI</span><br><small>${v.accent === 'UK' ? 'British' : 'American'} · ${v.gender === 'F' ? 'female' : 'male'}${v.note ? ' · ' + v.note : ''}</small></span><span>${on ? '✓' : ''}</span></button>`;
       }).join('')}</div>
-      <p class="hint" style="margin:6px 0 0">${speedNote ? esc(speedNote) + ' ' : ''}<button class="link" id="aiRemove">Remove AI voices</button></p>`;
+      <p class="hint" style="margin:6px 0 0">${speedNote ? esc(speedNote) + ' ' : ''}</p>
+      <div class="actions" style="justify-content:flex-start"><button class="btn" id="aiTest">Test AI voice</button><button class="link" id="aiRemove" style="margin-left:auto">Remove AI voices</button></div>
+      <p class="hint" id="aiTestOut" hidden></p>`;
+      box.querySelector('#aiTest').onclick = async () => {
+        const out = box.querySelector('#aiTestOut'); out.hidden = false;
+        const btn = box.querySelector('#aiTest'); btn.disabled = true;
+        const t0 = Date.now(); let step = 'Starting…';
+        const tick = setInterval(() => { out.textContent = `${step} (${Math.round((Date.now() - t0) / 1000)} s)`; }, 500);
+        try {
+          player.pause();
+          const r = await selfTest((s) => { step = s; });
+          clearInterval(tick);
+          const fast = r.rtf < 1;
+          out.innerHTML = `${fast ? '✓' : '⚠︎'} It works. Loading took ${r.load.toFixed(0)} s; it made ${r.dur.toFixed(1)} s of speech in ${r.make.toFixed(1)} s` +
+            (fast ? ` — fast enough for smooth reading.` : ` — slower than it speaks, so expect pauses between sentences. The iPhone’s Premium voices may suit this phone better.`);
+          const a = new Audio(); a.src = URL.createObjectURL(new Blob([wavBytes(r.samples)], { type: 'audio/wav' })); a.play().catch(() => {});
+        } catch (e) {
+          clearInterval(tick);
+          out.textContent = `✗ It didn’t work: ${/timeout/.test(e.message) ? 'it took too long (stuck at: ' + step + ')' : e.message}. Please send me this message.`;
+        } finally { btn.disabled = false; }
+      };
       box.querySelectorAll('[data-k]').forEach((btn) => btn.onclick = () => {
         state.settings.voiceURI = 'kokoro:' + btn.dataset.k; saveSettings(); pickVoice(); mark();
         if (!player.playing) { toast('Loading voice…', 1500); player.say(`Hello, I'm ${kokoroVoice(state.settings.voiceURI).name}.`); }
@@ -604,11 +624,30 @@ player.onstate = (playing) => {
   $('#playBtn').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   if (!playing) savePos();
 };
-player.onwait = (on, msg) => { $('#player').classList.toggle('waiting', !!on); if (on && msg) toast(msg, 4000); };
+let statusTimer = null, statusSince = 0;
+function setStatus(text) {
+  const el = $('#pStatus');
+  clearInterval(statusTimer);
+  if (!text) { el.hidden = true; return; }
+  statusSince = Date.now(); el.hidden = false;
+  const draw = () => { const s = Math.round((Date.now() - statusSince) / 1000); el.textContent = s >= 3 ? `${text} ${s} s` : text; };
+  draw(); statusTimer = setInterval(draw, 1000);
+}
+player.onwait = (on, msg) => { $('#player').classList.toggle('waiting', !!on); setStatus(on ? msg || 'Working…' : ''); };
 player.onerror = (msg) => {
-  $('#player').classList.remove('waiting');
-  if (/not-installed|manifest/.test(msg)) { state.settings.aiInstalled = false; saveSettings(); pickVoice(); toast('The AI voices need to be downloaded again (Voice menu).', 4500); }
-  else toast(msg, 4500);
+  $('#player').classList.remove('waiting'); setStatus('');
+  if (/not-installed|manifest/.test(msg)) { state.settings.aiInstalled = false; saveSettings(); pickVoice(); toast('The AI voices need to be downloaded again (Voice menu).', 5000); return; }
+  if (active === aiPlayer) {
+    // Don't leave the reader stuck: fall back to the iPhone voice.
+    state.settings.voiceURI = ''; saveSettings(); pickVoice();
+    const why = /timeout/.test(msg) ? 'The AI voice is too slow or got stuck on this phone' : `The AI voice stopped (${msg})`;
+    openSheet(`<h2>Switched to the iPhone voice</h2><p class="sub">${esc(why)}. Readwell is using the iPhone voice instead — tap ▶ to keep reading.</p>
+      <p class="sub">You can try the AI voice again from the 🗣 voice menu, where <b>Test AI voice</b> shows what happens on this phone.</p>
+      <div class="actions"><button class="btn primary" id="okBtn">OK</button></div>`);
+    $('#okBtn').onclick = closeSheet;
+    return;
+  }
+  toast(msg, 4500);
 };
 player.onend = () => { clearWord(); if (state.doc) { state.doc.pos = state.sentences.length - 1; savePos(); toast('Finished'); } };
 

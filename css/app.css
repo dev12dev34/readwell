@@ -278,3 +278,4 @@ html[data-theme="dark"] .q-tag.q3 { background: #1d3a27; color: #6fdc95; }
 .ai-card .err { color: var(--danger); }
 .player.waiting .pbtn.play { position: relative; }
 .player.waiting .pbtn.play::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 3px solid transparent; border-top-color: var(--accent); animation: spin .9s linear infinite; }
+.pstatus { text-align: center; font-size: 13px; color: var(--accent); margin-top: 2px; }

@@ -11,14 +11,17 @@ const MAX_PH = 500;
 // Where the voice files come from. If this website hosts its own copy (an ai/ folder
 // with manifest.json) that is used; otherwise they come from Hugging Face and jsDelivr,
 // which host these open-source files for free.
-const DEV = new URL(import.meta.url).searchParams.get('remote'); // testing only
-const HF = DEV ? DEV + '/hf/' : 'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/';
-const REMOTE = {
+let HF = 'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/';
+let REMOTE = makeRemote(null);
+function makeRemote(DEV) {
+  if (DEV) HF = DEV + '/hf/'; // testing only
+  return {
   model: [{ key: 'model/kokoro.onnx', url: HF + 'onnx/model_quantized.onnx', size: 92361116 }],
   wasm: { key: 'ort-wasm-simd-threaded.wasm', url: DEV ? DEV + '/jsd/ort-wasm-simd-threaded.wasm' : 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort-wasm-simd-threaded.wasm', size: 11210254 },
   voice: (name) => ({ key: `voices/${name}.bin`, url: `${HF}voices/${name}.bin`, size: 522240 }),
   firstVoice: 'af_heart',
-};
+  };
+}
 let manifest = null, session = null, loading = null;
 const voices = new Map();
 
@@ -112,10 +115,13 @@ async function load() {
       const m = await getManifest();
       const st = await status();
       if (!st.installed) throw new Error('not-installed');
+      post({ type: 'stage', text: 'Starting the speech engine…' });
       ort.env.wasm.wasmBinary = await fetchToCache(m.wasm);
       ort.env.wasm.wasmPaths = { mjs: new URL('../vendor/ort/ort-wasm-simd-threaded.js', import.meta.url).href };
       const cores = (self.navigator && navigator.hardwareConcurrency) || 2;
-      ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(4, cores - 1)) : 1;
+      // One thread: iPhones can stall when the engine uses several (shared-memory limits).
+      ort.env.wasm.numThreads = 1; void cores;
+      post({ type: 'stage', text: 'Loading the voice model (about 90 MB)…' });
       let model;
       if (m.model.length === 1) model = new Uint8Array(await fetchToCache(m.model[0]));
       else {
@@ -124,7 +130,9 @@ async function load() {
         model = new Uint8Array(parts.reduce((a, p) => a + p.length, 0)); let o = 0;
         for (const p of parts) { model.set(p, o); o += p.length; }
       }
-      session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+      post({ type: 'stage', text: 'Setting up the voice…' });
+      session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'], graphOptimizationLevel: 'all', enableCpuMemArena: false });
+      model = null;
       return session;
     })();
     loading.catch(() => { loading = null; });
@@ -176,10 +184,12 @@ async function synth(text, voiceName, speed = 1) {
   return { audio, phonemes: ph };
 }
 
+self.addEventListener('unhandledrejection', (e) => post({ type: 'stage', text: 'Problem: ' + (e.reason && e.reason.message || e.reason) }));
 let queue = Promise.resolve();
 const cancelled = new Set();
 onmessage = (e) => {
   const msg = e.data;
+  if (msg.cmd === 'config') { if (msg.remote) REMOTE = makeRemote(msg.remote); return; }
   if (msg.cmd === 'cancel') { for (const id of msg.ids) cancelled.add(id); return; }
   const run = async () => {
     try {
