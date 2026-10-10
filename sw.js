@@ -1,6 +1,6 @@
 // Readwell offline support: keeps a copy of the app on the phone so it opens
 // and works without the internet. Bump VERSION when publishing an update.
-const VERSION = 'readwell-1.1.1';
+const VERSION = 'readwell-1.1.2';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/db.js', 'js/text.js', 'js/importers.js', 'js/ocr.js', 'js/dict.js', 'js/speech.js', 'js/kokoro.js',

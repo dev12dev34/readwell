@@ -5,7 +5,7 @@ import { lookup, cleanWord } from './dict.js';
 import { Player, listVoices, voicesReady, voiceQuality, qualityLabel, cleanVoiceName, wordsOf } from './speech.js';
 import { KokoroPlayer, KOKORO_VOICES, isKokoro, kokoroVoice, engine, selfTest, wavBytes } from './kokoro.js';
 
-export const APP_VERSION = '1.1.1';
+export const APP_VERSION = '1.1.2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -267,12 +267,14 @@ function voiceSheet() {
           const r = await selfTest((s) => { step = s; });
           clearInterval(tick);
           const fast = r.rtf < 1;
-          out.innerHTML = `${fast ? '✓' : '⚠︎'} It works. Loading took ${r.load.toFixed(0)} s; it made ${r.dur.toFixed(1)} s of speech in ${r.make.toFixed(1)} s` +
+          out.innerHTML = `${fast ? '✓' : '⚠︎'} It works. Engine ${r.load.toFixed(1)} s · text ${r.phon.toFixed(1)} s${r.mainPhon ? ' (page)' : ''} · made ${r.dur.toFixed(1)} s of speech in ${r.make.toFixed(1)} s` +
             (fast ? ` — fast enough for smooth reading.` : ` — slower than it speaks, so expect pauses between sentences. The iPhone’s Premium voices may suit this phone better.`);
           const a = new Audio(); a.src = URL.createObjectURL(new Blob([wavBytes(r.samples)], { type: 'audio/wav' })); a.play().catch(() => {});
         } catch (e) {
           clearInterval(tick);
-          out.textContent = `✗ It didn’t work: ${/timeout/.test(e.message) ? 'it took too long (stuck at: ' + step + ')' : e.message}. Please send me this message.`;
+          const i = e.info || {};
+          const facts = [i.load != null && `engine ${i.load.toFixed(1)} s`, i.warm && `warm-up ${i.warm.toFixed(1)} s`, i.phon != null && `text ${i.phon.toFixed(1)} s${i.mainPhon ? ' (page)' : ''}`, i.ua].filter(Boolean).join(' · ');
+          out.textContent = `✗ It didn’t work: ${/timeout/.test(e.message) ? 'it took too long, stuck at “' + step + '”' : e.message} (after ${Math.round((Date.now() - t0) / 1000)} s). Details: ${facts}. Please send me this message.`;
         } finally { btn.disabled = false; }
       };
       box.querySelectorAll('[data-k]').forEach((btn) => btn.onclick = () => {

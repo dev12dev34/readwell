@@ -37,7 +37,7 @@ class Engine {
     if (!this.w) {
       const url = new URL('./kokoro-worker.js', import.meta.url);
       this.w = new Worker(url, { type: 'module' });
-      try { const dev = localStorage.getItem('rw-ai-remote'); if (dev) this.w.postMessage({ cmd: 'config', remote: dev }); } catch {}
+      try { const dev = localStorage.getItem('rw-ai-remote'); if (dev) this.w.postMessage({ cmd: 'config', remote: dev, stallPhon: localStorage.getItem('rw-ai-stall') === '1' }); } catch {}
       this.w.onmessage = (e) => {
         const m = e.data;
         if (m.type === 'progress') { this.onprogress && this.onprogress(m.loaded, m.total); return; }
@@ -76,22 +76,57 @@ class Engine {
     if (this.ready) return;
     if (!this.loadP) {
       this.loadP = withTimeout(this.send('load'), 150000, 'ai-timeout-load')
-        .then((r) => { this.ready = true; this.threads = r.threads; })
+        .then((r) => { this.ready = true; this.threads = r.threads; this.warmMs = r.warmMs; })
         .finally(() => { this.loadP = null; });
     }
     return this.loadP;
   }
   remove() { this.ready = false; return this.send('remove'); }
+  /** Text → phonemes. Done in the voice engine; if that stalls (seen on some
+   *  iPhones), it is done on the page instead from then on. */
+  async phon(text, lang) {
+    const t0 = performance.now();
+    let ph;
+    if (this.mainPhon) ph = await mainPhonemes(text, lang);
+    else {
+      const p = this.send('phon', { text, lang });
+      try { ph = (await race(p, 20000)).phonemes; }
+      catch (e) {
+        if (!e.timeout) throw e;
+        this.wait.delete(p.id);
+        this.mainPhon = true;
+        this.onstage && this.onstage('Converting text on the page instead…');
+        ph = await race(mainPhonemes(text, lang), 20000, 'ai-timeout-text');
+      }
+    }
+    this.phonMs = performance.now() - t0;
+    return ph;
+  }
   synth(text, voice, speed = 1) {
-    const p = this.send('synth', { text, voice, speed });
-    const out = p.then((m) => {
+    let runId = null, dead = false;
+    const out = (async () => {
+      const ph = await this.phon(text, voice[0] === 'b' ? 'b' : 'a');
+      if (dead) throw Object.assign(new Error('cancelled'), { cancelled: true });
+      const p = this.send('run', { phonemes: ph, voice, speed });
+      runId = p.id;
+      const m = await p;
+      this.runMs = m.ms;
       const dur = (m.audio.length / SR) * speed;
       if (dur > 0.5) { const r = (m.ms / 1000) / dur; this.rtf = this.rtf == null ? r : this.rtf * 0.7 + r * 0.3; }
       return m.audio;
-    });
-    out.id = p.id;
+    })();
+    out.cancel = () => { dead = true; if (runId) this.cancel([runId]); };
     return out;
   }
+}
+let phonMod = null;
+function mainPhonemes(text, lang) {
+  phonMod = phonMod || import('./kokoro-phonemes.js');
+  return phonMod.then((m) => m.textToPhonemes(text, lang));
+}
+function race(p, ms, code = 'timeout') {
+  let t;
+  return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error(code), { timeout: true })), ms); })]).finally(() => clearTimeout(t));
 }
 export const engine = new Engine();
 
@@ -105,15 +140,25 @@ export function withTimeout(p, ms, code) {
 export async function selfTest(onstep) {
   const t0 = performance.now();
   engine.onstage = (s) => onstep(s);
+  const info = { ua: navigator.userAgent.replace(/^.*?\((.*?)\).*$/, '$1') };
   try {
     onstep('Starting the voice engine…');
     await engine.load();
-    const tl = (performance.now() - t0) / 1000;
-    onstep(`Engine ready in ${tl.toFixed(1)} s. Making a test sentence…`);
+    info.load = (performance.now() - t0) / 1000;
+    info.warm = (engine.warmMs || 0) / 1000;
+    onstep('Converting text to speech sounds…');
+    const text = 'This is a short test of the natural AI voice.';
     const t1 = performance.now();
-    const a = await withTimeout(engine.synth('This is a short test of the natural AI voice.', 'af_heart', 1), 120000, 'ai-timeout');
-    const make = (performance.now() - t1) / 1000, dur = a.length / SR;
-    return { ok: true, load: tl, make, dur, rtf: make / dur, samples: a };
+    const ph = await engine.phon(text, 'a');
+    info.phon = (performance.now() - t1) / 1000; info.mainPhon = !!engine.mainPhon;
+    onstep('Running the voice model…');
+    const t2 = performance.now();
+    const a = await withTimeout(engine.send('run', { phonemes: ph, voice: 'af_heart', speed: 1 }).then((m) => m.audio), 120000, 'ai-timeout');
+    info.make = (performance.now() - t2) / 1000; info.dur = a.length / SR; info.rtf = info.make / info.dur;
+    return { ok: true, ...info, samples: a };
+  } catch (e) {
+    e.info = info;
+    throw e;
   } finally { engine.onstage = null; }
 }
 
@@ -213,7 +258,7 @@ export class KokoroPlayer {
     this.voice = v; this._clearCache();
     if (was) this.play(this.index, at); else this.cur = null;
   }
-  _clearCache() { engine.cancel([...this.cache.values()].map((p) => p.id).filter(Boolean)); this.cache.clear(); }
+  _clearCache() { for (const p of this.cache.values()) p.cancel && p.cancel(); this.cache.clear(); }
 
   _unlock() {
     if (this.unlocked) return;
@@ -281,9 +326,7 @@ export class KokoroPlayer {
     this._internalPause = true; this.audio.pause(); this._internalPause = false;
     this.index = Math.max(0, Math.min(index, this.sentences.length - 1));
     // drop queued clips that are no longer near where we're reading
-    const stale = [];
-    for (const [key, p] of this.cache) { const i = +key.split(':')[0]; if (i < this.index || i > this.index + 3) { stale.push(p.id); this.cache.delete(key); } }
-    engine.cancel(stale.filter(Boolean));
+    for (const [key, p] of this.cache) { const i = +key.split(':')[0]; if (i < this.index || i > this.index + 3) { p.cancel && p.cancel(); this.cache.delete(key); } }
     // start on a word boundary
     const s = this.sentences[this.index];
     const w = wordsOf(s.text).find(([st, len]) => charOffset < st + len);
