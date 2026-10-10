@@ -1,6 +1,6 @@
 // Readwell offline support: keeps a copy of the app on the phone so it opens
 // and works without the internet. Bump VERSION when publishing an update.
-const VERSION = 'readwell-1.1.2';
+const VERSION = 'readwell-1.2.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/db.js', 'js/text.js', 'js/importers.js', 'js/ocr.js', 'js/dict.js', 'js/speech.js', 'js/kokoro.js',
@@ -13,7 +13,8 @@ const EXTRA = [
   'vendor/tesseract/core/tesseract-core-simd-lstm.wasm.js', 'vendor/tesseract/lang/eng.traineddata.gz',
   // AI voice program files (the voice model itself is downloaded only when asked for)
   'js/kokoro-worker.js', 'js/kokoro-phonemes.js', 'js/kokoro-vocab.js',
-  'vendor/ort/ort.wasm.min.js', 'vendor/ort/ort-wasm-simd-threaded.js', 'vendor/phonemizer.js',
+  'vendor/ort/ort.wasm.min.js', 'vendor/ort/ort-wasm-simd-threaded.js',
+  'vendor/piper/piper_phonemize.js', 'vendor/piper/piper_phonemize.wasm', 'vendor/piper/piper_phonemize.data',
 ];
 
 // (Not used: cross-origin isolation caused problems on iPhones.)

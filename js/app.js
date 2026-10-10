@@ -5,7 +5,7 @@ import { lookup, cleanWord } from './dict.js';
 import { Player, listVoices, voicesReady, voiceQuality, qualityLabel, cleanVoiceName, wordsOf } from './speech.js';
 import { KokoroPlayer, KOKORO_VOICES, isKokoro, kokoroVoice, engine, selfTest, wavBytes } from './kokoro.js';
 
-export const APP_VERSION = '1.1.2';
+export const APP_VERSION = '1.2.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

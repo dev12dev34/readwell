@@ -1,6 +1,32 @@
 // Text → phonemes for Kokoro, ported from kokoro-js (Apache-2.0, hexgrad & Xenova)
 // so the phone produces the same pronunciation as the reference implementation.
-import { phonemize } from '../vendor/phonemizer.js';
+// eSpeak NG runs as real WebAssembly (piper-phonemize build); the earlier
+// JavaScript-only build was far too slow in Safari on iPhone.
+import createPiperPhonemize from '../vendor/piper/piper_phonemize.js';
+
+let espeak = null, lines = [], calls = 0;
+function engine() {
+  if (!espeak) {
+    espeak = createPiperPhonemize({
+      print: (t) => lines.push(t),
+      printErr: () => {},
+      locateFile: (f) => new URL('../vendor/piper/' + f, import.meta.url).href,
+    });
+    espeak.catch(() => { espeak = null; });
+  }
+  return espeak;
+}
+
+/** eSpeak IPA for a piece of text without punctuation. */
+async function phonemize(text, lang) {
+  if (++calls > 300) { espeak = null; calls = 0; } // start fresh now and then
+  const m = await engine();
+  lines = [];
+  m.callMain(['-l', lang, '--input', JSON.stringify([{ text }]), '--espeak_data', '/espeak-ng-data']);
+  const out = [];
+  for (const line of lines) { try { out.push(JSON.parse(line).phonemes.join('')); } catch {} }
+  return out;
+}
 
 function splitNum(e) {
   if (e.includes('.')) return e;
